@@ -25,6 +25,12 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
 
+      - name: Configure release ABI
+        shell: bash
+        run: |
+          sed -i 's/abiFilters += listOf("arm64-v8a", "x86_64")/abiFilters += listOf("arm64-v8a")/' app/build.gradle.kts
+          grep -A3 'ndk {' app/build.gradle.kts | head -n 4
+
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --stacktrace
 
