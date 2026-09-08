@@ -23,6 +23,27 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v5
 
+      - name: Configure persistent release signing
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEYSTORE_B64" || { echo "Missing ANDROID_KEYSTORE_B64 repository secret"; exit 1; }
+          mkdir -p "$HOME/keystores"
+          echo "$ANDROID_KEYSTORE_B64" | base64 -d > "$HOME/keystores/apc-release.jks"
+          cat > keystore.properties <<EOF
+          storeFile=$HOME/keystores/apc-release.jks
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          keyPassword=$ANDROID_KEY_PASSWORD
+          EOF
+          chmod 600 keystore.properties "$HOME/keystores/apc-release.jks"
+          keytool -list -keystore "$HOME/keystores/apc-release.jks" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null
+
       - name: Configure release ABI
         shell: bash
         run: |
@@ -31,6 +52,13 @@ jobs:
 
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Verify APK is release-signed
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -n 1)
+          "$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)/apksigner" verify --verbose "$APK"
 
       - name: Read app version
         id: version
@@ -69,6 +97,7 @@ jobs:
             - ABI: arm64-v8a only
             - Bundled STT model: removed
             - BGE semantic memory: retained
+            - Release signing: persistent repository key
           files: AI-Pocket-Chat-v*.apk
           generate_release_notes: true
           prerelease: false
