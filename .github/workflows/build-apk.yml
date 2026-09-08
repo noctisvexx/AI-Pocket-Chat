@@ -1,4 +1,4 @@
-name: Build APK
+name: Build and Release APK
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     branches: [ main ]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -28,10 +28,40 @@ jobs:
       - name: Build release APK
         run: ./gradlew :app:assembleRelease --stacktrace
 
-      - name: Upload APK
+      - name: Read app version
+        id: version
+        shell: bash
+        run: |
+          VERSION_NAME=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*versionName = "([^"]+)".*/\1/')
+          VERSION_CODE=$(grep -m1 'versionCode' app/build.gradle.kts | sed -E 's/.*versionCode = ([0-9]+).*/\1/')
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "version_code=$VERSION_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Rename APK
+        shell: bash
+        run: |
+          APK=$(find app/build/outputs/apk/release -maxdepth 1 -name '*.apk' | head -n 1)
+          cp "$APK" "AI-Pocket-Chat-v${{ steps.version.outputs.version_name }}.apk"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: AI-Pocket-Chat-release
-          path: app/build/outputs/apk/release/*.apk
+          path: AI-Pocket-Chat-v*.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version_name }}-${{ github.run_number }}
+          name: AI-Pocket-Chat v${{ steps.version.outputs.version_name }} (build ${{ github.run_number }})
+          body: |
+            Automated APK build from commit ${{ github.sha }}.
+
+            - Version: ${{ steps.version.outputs.version_name }}
+            - Version code: ${{ steps.version.outputs.version_code }}
+            - Build: ${{ github.run_number }}
+          files: AI-Pocket-Chat-v*.apk
+          generate_release_notes: true
+          prerelease: false
