@@ -59,6 +59,18 @@ jobs:
         if: steps.sync.outputs.updated == 'true'
         uses: gradle/actions/setup-gradle@v5
 
+      - name: Configure lean release build
+        if: steps.sync.outputs.updated == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Release APK: ARM64 only.
+          sed -i 's/abiFilters += listOf("arm64-v8a", "x86_64")/abiFilters += listOf("arm64-v8a")/' app/build.gradle.kts
+          # This fork disables bundled on-device STT; keep the no-op SttEngine and
+          # omit the sherpa AAR from the release classpath/package.
+          sed -i '/implementation(files("libs\/sherpa-onnx-1.13.3.aar"))/d' app/build.gradle.kts
+          grep -A3 'ndk {' app/build.gradle.kts | head -n 4
+
       - name: Build release APK
         if: steps.sync.outputs.updated == 'true'
         run: ./gradlew :app:assembleRelease --stacktrace
@@ -98,4 +110,4 @@ jobs:
           TAG="v${{ steps.version.outputs.version_name }}-${{ github.run_number }}"
           gh release create "$TAG" "AI-Pocket-Chat-v${{ steps.version.outputs.version_name }}.apk" \
             --title "AI-Pocket-Chat v${{ steps.version.outputs.version_name }} (build ${{ github.run_number }})" \
-            --notes "Automated APK build from upstream sync.\n\n- Version: ${{ steps.version.outputs.version_name }}\n- Version code: ${{ steps.version.outputs.version_code }}\n- Build: ${{ github.run_number }}"
+            --notes "Automated ARM64-only APK build from upstream sync.\n\n- Version: ${{ steps.version.outputs.version_name }}\n- Version code: ${{ steps.version.outputs.version_code }}\n- Build: ${{ github.run_number }}\n- ABI: arm64-v8a only\n- Bundled STT model: removed\n- BGE semantic memory: retained"
