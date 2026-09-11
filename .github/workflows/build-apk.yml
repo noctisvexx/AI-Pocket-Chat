@@ -20,6 +20,17 @@ name: Build and Release APK
 # 合并之后：只有一条 run_number 序列（tag 不再撞），签名逻辑只有一份，
 # 所有发布出来的 APK 都是同一个密钥、同样的构建参数。
 #
+# ── 发布策略 ─────────────────────────────────────────────────────────────────
+# 每次构建会写两个 release：
+#
+#   1. 「latest」固定入口 —— tag 固定、asset 名固定（不带版本号），每次构建覆盖。
+#      下载链接永远不变，手机存这一个书签就够：
+#        https://github.com/<owner>/<repo>/releases/latest/download/AI-Pocket-Chat.apk
+#      同时被标为 Latest，所以 /releases/latest 也会重定向到这里。
+#
+#   2. 带 build 号的历史归档（如 v0.1.0-23）—— 需要回滚旧版本时用。
+#      不想要它的话，把最后那段「历史归档」删掉即可，固定入口不受影响。
+#
 # 首次使用前必须先配好 4 个仓库 secret（Settings -> Secrets and variables -> Actions）：
 #   ANDROID_KEYSTORE_B64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD
 # 还没有 keystore 的话，先手动跑一次 generate-keystore.yml 生成。
@@ -238,7 +249,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Create GitHub Release
+      - name: Publish APK to releases
         if: steps.sync.outputs.updated != 'false'
         shell: bash
         env:
@@ -255,7 +266,51 @@ jobs:
           set -euo pipefail
 
           VERSION_NAME="${{ steps.version.outputs.version_name }}"
+          VERSION_CODE="${{ steps.version.outputs.version_code }}"
           APK_FILE="AI-Pocket-Chat-v${VERSION_NAME}.apk"
+
+          NOTES_FILE="$RUNNER_TEMP/release-notes.md"
+          cat > "$NOTES_FILE" <<EOF
+          Automated ARM64-only APK build (upstream sync + manual trigger).
+
+          - Version: ${VERSION_NAME}
+          - Version code: ${VERSION_CODE}
+          - Build: ${GITHUB_RUN_NUMBER}
+          - Commit: ${GITHUB_SHA}
+          - ABI: arm64-v8a only
+          - Bundled STT model: removed
+          - BGE semantic memory: retained
+          - Release signing: persistent repository key
+          EOF
+
+          # ── ① 固定入口 release ───────────────────────────────────────────
+          # 所有构建都写进同一个 tag=latest 的 release，asset 名也不带版本号，
+          # 于是下载链接永远不变（手机存这一个书签就够，每次自动指向最新版）：
+          #   https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/AI-Pocket-Chat.apk
+          # 同时把它标为 Latest，所以 /releases/latest 也重定向到这里。
+          #
+          # 注意 asset 名刻意不带版本号：versionName 一直是 0.1.0，带上也区分不了，
+          # 反而会让链接失效。
+          ROLLING_TAG="latest"
+          ROLLING_ASSET="AI-Pocket-Chat.apk"
+          ROLLING_TITLE="AI-Pocket-Chat 最新版（v${VERSION_NAME} · build ${GITHUB_RUN_NUMBER}）"
+
+          cp "$APK_FILE" "$ROLLING_ASSET"
+
+          if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
+            gh release upload "$ROLLING_TAG" "$ROLLING_ASSET" --clobber
+            gh release edit "$ROLLING_TAG" \
+              --title "$ROLLING_TITLE" --notes-file "$NOTES_FILE" --latest
+            echo "已更新固定 release：$ROLLING_TAG（$ROLLING_ASSET）"
+          else
+            gh release create "$ROLLING_TAG" "$ROLLING_ASSET" \
+              --title "$ROLLING_TITLE" --notes-file "$NOTES_FILE" --latest
+            echo "已创建固定 release：$ROLLING_TAG（$ROLLING_ASSET）"
+          fi
+
+          # ── ② 历史归档 release ──────────────────────────────────────────
+          # 每次构建另建一个带 build 号的 release，方便回滚到旧版本。
+          # 不想要这份归档的话，把下面这一整段删掉即可，固定入口不受影响。
           TAG="v${VERSION_NAME}-${GITHUB_RUN_NUMBER}"
 
           # 双保险：versionName 恒为 0.1.0、versionCode 恒为 1，tag 唯一性全靠 run_number。
@@ -266,23 +321,13 @@ jobs:
             echo "::warning title=tag 已被占用::${OLD_TAG} 已存在，本次改用 ${TAG}"
           fi
 
-          TITLE="AI-Pocket-Chat v${VERSION_NAME} (build ${GITHUB_RUN_NUMBER})"
-          NOTES="Automated ARM64-only APK build (upstream sync + manual trigger).
-
-          - Version: ${VERSION_NAME}
-          - Version code: ${{ steps.version.outputs.version_code }}
-          - Build: ${GITHUB_RUN_NUMBER}
-          - Commit: ${GITHUB_SHA}
-          - ABI: arm64-v8a only
-          - Bundled STT model: removed
-          - BGE semantic memory: retained
-          - Release signing: persistent repository key"
-
-          # 幂等：tag 上已有 release 就补传 APK，不重复创建。
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$APK_FILE" --clobber
-            echo "已更新已有 release：$TAG"
+            echo "已更新归档 release：$TAG"
           else
-            gh release create "$TAG" "$APK_FILE" --title "$TITLE" --notes "$NOTES"
-            echo "已创建 release：$TAG"
+            # --latest=false：别把固定 release 的 Latest 标记抢走。
+            gh release create "$TAG" "$APK_FILE" \
+              --title "AI-Pocket-Chat v${VERSION_NAME} (build ${GITHUB_RUN_NUMBER})" \
+              --notes-file "$NOTES_FILE" --latest=false
+            echo "已创建归档 release：$TAG"
           fi
