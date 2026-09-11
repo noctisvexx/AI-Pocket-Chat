@@ -80,10 +80,12 @@ jobs:
           fi
           git fetch upstream main
 
-          LOCAL=$(git rev-parse HEAD)
-          UPSTREAM=$(git rev-parse upstream/main)
-
-          if [ "$LOCAL" = "$UPSTREAM" ]; then
+          # 判断「上游是否真有新东西」，不能拿 HEAD 和 upstream/main 直接比：
+          # 本 fork 有自己的提交（改过的 workflow、删掉的 sync-upstream.yml），
+          # 两者永远不相等 —— 那样写会让这个跳过分支永远不生效，变成「上游半年
+          # 没动也天天重新构建、天天发一个内容一模一样的 release」。
+          # 正确问法是：上游最新提交是不是已经是 HEAD 的祖先。
+          if git merge-base --is-ancestor upstream/main HEAD; then
             echo "上游无新提交，跳过本次构建。"
             echo "updated=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -96,7 +98,13 @@ jobs:
           # 保留 fork 自己的提交；真冲突就失败退出，不静默覆盖本地改动。
           git merge upstream/main --no-edit
 
-          git push origin HEAD:main
+          # 构建期间若有人（或网页端）改动了 main，直接推会被拒 "fetch first"。
+          # rebase 后再试一次，别让整次构建因为这个时序问题白跑。
+          if ! git push origin HEAD:main; then
+            echo "推送被拒绝（main 期间有新的提交），rebase 后重试一次。"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
           echo "updated=true" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 17
@@ -235,6 +243,14 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # 关键：必须显式指定仓库，不能让 gh 自己猜。
+          # Sync upstream 步骤加了一条指向 marlon0066/AI-Pocket-Chat 的 remote，而
+          # gh CLI 在 git 仓库里会按 remote 自动推断"当前仓库"——结果推断到了上游，
+          # 拿本仓库的 token 去操作别人的仓库，报
+          #   403 Resource not accessible by integration
+          #   (api.github.com/repos/marlon0066/AI-Pocket-Chat/releases)
+          # 显式给出 GH_REPO 后，gh 一律以本 fork 为目标。
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
@@ -251,7 +267,7 @@ jobs:
           fi
 
           TITLE="AI-Pocket-Chat v${VERSION_NAME} (build ${GITHUB_RUN_NUMBER})"
-          NOTES="Automated ARM64-only APK build from upstream sync.
+          NOTES="Automated ARM64-only APK build (upstream sync + manual trigger).
 
           - Version: ${VERSION_NAME}
           - Version code: ${{ steps.version.outputs.version_code }}
