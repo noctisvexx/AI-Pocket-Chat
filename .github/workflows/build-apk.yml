@@ -40,10 +40,21 @@ on:
 permissions:
   contents: write
 
-# 手动与定时可能同时触发，排队执行，避免两个 run 争抢同一个 tag。
-concurrency:
-  group: release-apk
-  cancel-in-progress: false
+# 这里刻意不写 concurrency。
+#
+# GitHub 的 concurrency 是按 group 名串行的：同一 group 里只要有 run 还挂在
+# 「排队」状态，后面的 run 就永远不会开始。而 GitHub 有个已知的后端问题
+# （2026-09 社区仍有报告）：run 和 check-suite 在 metadata 层创建了，调度器却
+# 没拿到 workload —— 表现就是 status=queued、jobs=0、check-runs=0、
+# updated_at 永远不动。这种「孤儿记录」在页面上去不掉，取消还会返回 500/409。
+#
+# 一旦出现一次，它会把同名 group 后面所有 run 全部堵死 —— 而且是静默的，
+# 页面上只显示 Queued，看不出任何原因。不写 concurrency，这种记录就是惰性的，
+# 不消耗额度也不挡新 run，等 GitHub 自己清理即可。
+#
+# 那并发怎么办？这里本来就不需要防：tag 用的是 ${{ github.run_number }}，
+# 两个并发 run 的编号天然不同，不会重名；后面还额外做了 tag 存在性检查和
+# release 幂等处理。手动和定时撞上的概率本来也低，不值得为此换一个死锁风险。
 
 jobs:
   build:
